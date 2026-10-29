@@ -38,6 +38,113 @@ function ProjectForm({ form, setForm, onSave, onCancel, busy }) {
   );
 }
 
+const DW = 26;
+const dn = (d) => Math.floor(Date.parse(d + 'T00:00:00Z') / 86400000);
+const fmt = (n) => new Date(n * 86400000).toISOString().slice(0, 10);
+const short = (n) =>
+  new Date(n * 86400000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
+function TaskForm({ form, setForm, onSave, onDelete, onCancel, busy, projectName }) {
+  return (
+    <div className="row ok" style={{ marginBottom: 12 }}>
+      <div className="sub" style={{ marginBottom: 6 }}>{projectName}</div>
+      <input
+        className="fld"
+        placeholder="Step title"
+        value={form.title}
+        onChange={(e) => setForm({ ...form, title: e.target.value })}
+      />
+      <div className="frow">
+        <label className="lbl">Start
+          <input type="date" className="fld" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+        </label>
+        <label className="lbl">End
+          <input type="date" className="fld" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
+        </label>
+      </div>
+      <div className="frow" style={{ marginTop: 8 }}>
+        <select className="fld" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option value="todo">To do</option>
+          <option value="doing">Doing</option>
+          <option value="done">Done</option>
+        </select>
+        <select className="fld" value={form.progress} onChange={(e) => setForm({ ...form, progress: Number(e.target.value) })}>
+          {[0, 25, 50, 75, 100].map((n) => <option key={n} value={n}>{n}% done</option>)}
+        </select>
+      </div>
+      <div className="frow" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy || !form.title.trim()} onClick={onSave}>Save</button>
+        {onDelete && <button className="ghost danger" disabled={busy} onClick={onDelete}>Delete</button>}
+        <button className="ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function Gantt({ projects, tasks, today, onAdd, onEdit }) {
+  const t0 = dn(today);
+  const shown = tasks.filter((t) => projects.some((p) => p.id === t.project_id));
+  let min = t0 - 1;
+  let max = t0 + 20;
+  shown.forEach((t) => {
+    min = Math.min(min, dn(t.start_date) - 1);
+    max = Math.max(max, dn(t.end_date) + 3);
+  });
+  const n = max - min + 1;
+  const grid = {
+    width: n * DW,
+    backgroundImage: `repeating-linear-gradient(to right, var(--line) 0, var(--line) 1px, transparent 1px, transparent ${DW * 7}px)`,
+  };
+
+  return (
+    <div className="gscroll">
+      <div className="ginner" style={grid}>
+        <div className="ghead">
+          {Array.from({ length: Math.ceil(n / 7) }, (_, i) => (
+            <span key={i} style={{ left: i * 7 * DW + 3 }}>{short(min + i * 7)}</span>
+          ))}
+        </div>
+        <div className="gtoday" style={{ left: (t0 - min) * DW + DW / 2 }} />
+        {projects.map((p) => {
+          const pt = tasks.filter((t) => t.project_id === p.id);
+          return (
+            <div key={p.id} className="gproj">
+              <div className="gsticky gpname">
+                <b>{p.name}</b>
+                <button className="ghost small" onClick={() => onAdd(p)}>+ Step</button>
+              </div>
+              {pt.length === 0 && <div className="gsticky sub" style={{ padding: '4px 0 8px' }}>No steps yet</div>}
+              {pt.map((t) => {
+                const s = dn(t.start_date);
+                const e = dn(t.end_date);
+                const late = t.status !== 'done' && e < t0;
+                return (
+                  <div
+                    key={t.id}
+                    className="grow"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onEdit(t)}
+                    onKeyDown={(ev) => { if (ev.key === 'Enter') onEdit(t); }}
+                  >
+                    <div className="gsticky glabel">
+                      {t.title}{' '}
+                      <span className="sub">{short(s)} to {short(e)}{late && <span className="late-t"> Late</span>}</span>
+                    </div>
+                    <div className={`gbar ${t.status} ${late ? 'late' : ''}`} style={{ left: (s - min) * DW, width: (e - s + 1) * DW }}>
+                      <div className="gfill" style={{ width: `${t.progress}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Page() {
   const [code, setCode] = useState('');
   const [input, setInput] = useState('');
@@ -48,6 +155,8 @@ export default function Page() {
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(null); // null | 'new' | project id
   const [form, setForm] = useState(BLANK);
+  const [view, setView] = useState('overview'); // overview | gantt
+  const [taskForm, setTaskForm] = useState(null);
   const endRef = useRef(null);
 
   async function api(path, passcode, body, method) {
@@ -136,6 +245,52 @@ export default function Page() {
     setBusy(false);
   }
 
+  function openAddTask(p) {
+    setTaskForm({
+      id: null, project_id: p.id, title: '',
+      start_date: state.day, end_date: fmt(dn(state.day) + 6), status: 'todo', progress: 0,
+    });
+  }
+
+  function openEditTask(t) {
+    setTaskForm({
+      id: t.id, project_id: t.project_id, title: t.title,
+      start_date: t.start_date, end_date: t.end_date, status: t.status, progress: t.progress,
+    });
+  }
+
+  async function saveTask() {
+    if (taskForm.end_date < taskForm.start_date) {
+      setError('End date is before start date.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = taskForm.id
+        ? await api('/api/tasks', code, taskForm, 'PATCH')
+        : await api('/api/tasks', code, taskForm, 'POST');
+      setState(data);
+      setTaskForm(null);
+    } catch (e) {
+      setError(e.message);
+    }
+    setBusy(false);
+  }
+
+  async function deleteTask() {
+    if (!window.confirm('Delete this step?')) return;
+    setBusy(true);
+    setError('');
+    try {
+      setState(await api('/api/tasks', code, { id: taskForm.id }, 'DELETE'));
+      setTaskForm(null);
+    } catch (e) {
+      setError(e.message);
+    }
+    setBusy(false);
+  }
+
   if (!authed) {
     return (
       <div className="center">
@@ -196,6 +351,27 @@ export default function Page() {
       ) : (
         <div className="scroll">
           {error && <div className="err" style={{ padding: '0 0 8px' }}>{error}</div>}
+          <div className="tabs" style={{ padding: '0 0 12px' }}>
+            <button className={`tab ${view === 'overview' ? 'on' : ''}`} onClick={() => setView('overview')}>Overview</button>
+            <button className={`tab ${view === 'gantt' ? 'on' : ''}`} onClick={() => setView('gantt')}>Gantt</button>
+          </div>
+          {view === 'gantt' ? (
+            <>
+              {taskForm && (
+                <TaskForm
+                  form={taskForm}
+                  setForm={setTaskForm}
+                  onSave={saveTask}
+                  onDelete={taskForm.id ? deleteTask : null}
+                  onCancel={() => setTaskForm(null)}
+                  busy={busy}
+                  projectName={state.projects.find((p) => p.id === taskForm.project_id)?.name}
+                />
+              )}
+              <Gantt projects={state.projects} tasks={state.tasks || []} today={state.day} onAdd={openAddTask} onEdit={openEditTask} />
+            </>
+          ) : (
+            <>
           <div className="sec">
             <h2>Today's plan</h2>
             {state.plan.length === 0 && <div className="sub">Not agreed yet. Start a session in Coach.</div>}
@@ -249,6 +425,8 @@ export default function Page() {
               );
             })}
           </div>
+            </>
+          )}
         </div>
       )}
     </div>
