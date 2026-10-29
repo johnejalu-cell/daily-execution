@@ -63,7 +63,46 @@ const TOOLS = [
       required: ['items'],
     },
   },
+  {
+    name: 'add_task',
+    description: 'Add a dated implementation step (Gantt bar) to a project. Use this to break projects into concrete steps with realistic start and end dates.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        title: { type: 'string' },
+        start_date: { type: 'string', description: 'YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'YYYY-MM-DD, on or after start_date' },
+        status: { type: 'string', enum: ['todo', 'doing', 'done'] },
+      },
+      required: ['project_id', 'title', 'start_date', 'end_date'],
+    },
+  },
+  {
+    name: 'update_task',
+    description: 'Update a Gantt step: reschedule, rename, change status or progress. Use when the user reports progress or a slip.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' },
+        start_date: { type: 'string' },
+        end_date: { type: 'string' },
+        status: { type: 'string', enum: ['todo', 'doing', 'done'] },
+        progress: { type: 'integer', description: '0-100' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete_task',
+    description: 'Delete a Gantt step.',
+    input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  },
 ];
+
+const touch = (id) =>
+  db.from('projects').update({ last_touched: new Date().toISOString() }).eq('id', id);
 
 async function runTool(name, input) {
   try {
@@ -104,6 +143,31 @@ async function runTool(name, input) {
       if (error) throw error;
       return 'Plan saved';
     }
+    if (name === 'add_task') {
+      const { data, error } = await db.from('tasks').insert({
+        project_id: input.project_id,
+        title: input.title,
+        start_date: input.start_date,
+        end_date: input.end_date,
+        status: input.status || 'todo',
+      }).select().single();
+      if (error) throw error;
+      await touch(input.project_id);
+      return `Added step (id ${data.id})`;
+    }
+    if (name === 'update_task') {
+      const { id, ...rest } = input;
+      if (rest.status === 'done') rest.progress = 100;
+      const { data, error } = await db.from('tasks').update(rest).eq('id', id).select().single();
+      if (error) throw error;
+      await touch(data.project_id);
+      return 'Step updated';
+    }
+    if (name === 'delete_task') {
+      const { error } = await db.from('tasks').delete().eq('id', input.id);
+      if (error) throw error;
+      return 'Step deleted';
+    }
     return 'Unknown tool';
   } catch (e) {
     return `Error: ${e.message}`;
@@ -122,6 +186,11 @@ function buildSystem(s) {
     const late = c.due_date && c.due_date < s.day ? ' OVERDUE' : '';
     return `- [${c.id}] ${c.text} | due ${c.due_date || 'none'}${late}`;
   }).join('\n') || '(none)';
+  const tasks = (s.tasks || []).filter((t) => s.projects.some((p) => p.id === t.project_id)).map((t) => {
+    const pn = s.projects.find((p) => p.id === t.project_id)?.name;
+    const late = t.status !== 'done' && t.end_date < s.day ? ' | LATE' : '';
+    return `- [${t.id}] ${pn}: ${t.title} | ${t.start_date} to ${t.end_date} | ${t.status} | ${t.progress}%${late}`;
+  }).join('\n') || '(none)';
   const plan = s.plan.length ? s.plan.map((i) => `- ${i}`).join('\n') : '(not agreed yet)';
 
   return `You are John's daily execution coach. John is a non-technical founder in Kampala (EAT) running many parallel projects. Today is ${s.day}.
@@ -133,6 +202,7 @@ Your job:
 4. Track commitments: when he promises to do something, call add_commitment. Follow up on open ones. When done, call complete_commitment.
 5. If he drifts from the agreed plan, redirect him in one short line, but accept genuine new input and re-prioritize if warranted.
 6. When a project or detail is unspecified, pick the most plausible candidate from the data, state which you picked, and proceed.
+7. The Gantt chart is built from STEPS. For any active project with no steps, or when asked to plan a project, break it into concrete dated steps and create them with add_task (realistic dates starting from today). When he reports progress or a slip, update the steps with update_task (status, progress, new dates). Flag LATE steps at session start and propose a reschedule. Do not delete steps unless he asks.
 
 Style: concise, direct, decisive. Plain-text lists using "-" . No motivational talk, no headers, no markdown bold. Keep replies short enough to read on a phone. Give a recommendation, not a menu of options.
 
@@ -141,6 +211,9 @@ ${projects}
 
 OPEN COMMITMENTS:
 ${commitments}
+
+STEPS (Gantt):
+${tasks}
 
 TODAY'S AGREED PLAN:
 ${plan}`;
