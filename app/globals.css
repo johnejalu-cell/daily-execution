@@ -106,3 +106,22 @@ button.ghost {
   border-radius: 10px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer;
 }
 button.ghost.danger { color: var(--late); }
+.lbl { flex: 1; font-size: 12px; color: var(--muted); display: block; }
+.lbl .fld { margin-top: 2px; }
+button.ghost.small { padding: 4px 10px; font-size: 13px; }
+.gscroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.ginner { position: relative; min-width: 100%; padding-bottom: 8px; }
+.ghead { position: relative; height: 24px; border-bottom: 1px solid var(--line); }
+.ghead span { position: absolute; top: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.gtoday { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--late); opacity: .7; z-index: 1; pointer-events: none; }
+.gproj { padding-top: 10px; }
+.gsticky { position: sticky; left: 8px; width: max-content; max-width: calc(100vw - 56px); }
+.gpname { display: flex; align-items: center; gap: 10px; padding-bottom: 4px; }
+.grow { position: relative; height: 46px; cursor: pointer; }
+.glabel { font-size: 13px; line-height: 20px; height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gbar { position: absolute; top: 24px; height: 16px; border-radius: 6px; background: var(--bg); border: 1px solid var(--muted); overflow: hidden; }
+.gbar.doing { border-color: var(--accent); }
+.gbar.done { border-color: var(--accent); }
+.gbar.late { border-color: var(--late); }
+.gfill { height: 100%; background: var(--accent); }
+.gbar.late .gfill { background: var(--late); }
