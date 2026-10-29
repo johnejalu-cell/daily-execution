@@ -1,0 +1,201 @@
+import { NextResponse } from 'next/server';
+import { db, authorized, loadState, today } from '../../../lib/supabase';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+const MODEL = 'claude-sonnet-5-5';
+
+const TOOLS = [
+  {
+    name: 'add_project',
+    description: 'Add a new project or objective.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        next_step: { type: 'string' },
+        priority: { type: 'integer', description: '1 = highest, 5 = lowest' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'update_project',
+    description: 'Update a project. Any update counts as touching it (resets the stale clock). Use whenever the user reports progress or the next step changes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        status: { type: 'string', enum: ['active', 'paused', 'done'] },
+        priority: { type: 'integer' },
+        next_step: { type: 'string' },
+        notes: { type: 'string' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'add_commitment',
+    description: 'Record a commitment the user made, so it is followed up in later sessions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        due_date: { type: 'string', description: 'YYYY-MM-DD' },
+        project_id: { type: 'string' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'complete_commitment',
+    description: 'Mark a commitment done.',
+    input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  },
+  {
+    name: 'save_plan',
+    description: "Save today's agreed to-do list. Only call after the user has agreed or edited the proposal.",
+    input_schema: {
+      type: 'object',
+      properties: { items: { type: 'array', items: { type: 'string' } } },
+      required: ['items'],
+    },
+  },
+];
+
+async function runTool(name, input) {
+  try {
+    if (name === 'add_project') {
+      const { data, error } = await db.from('projects').insert({
+        name: input.name,
+        next_step: input.next_step || '',
+        priority: input.priority || 3,
+      }).select().single();
+      if (error) throw error;
+      return `Added project ${data.name} (id ${data.id})`;
+    }
+    if (name === 'update_project') {
+      const { id, ...rest } = input;
+      const { error } = await db.from('projects').update({ ...rest, last_touched: new Date().toISOString() }).eq('id', id);
+      if (error) throw error;
+      return 'Project updated';
+    }
+    if (name === 'add_commitment') {
+      const { error } = await db.from('commitments').insert({
+        text: input.text,
+        due_date: input.due_date || null,
+        project_id: input.project_id || null,
+      });
+      if (error) throw error;
+      return 'Commitment recorded';
+    }
+    if (name === 'complete_commitment') {
+      const { error } = await db.from('commitments')
+        .update({ status: 'done', completed_at: new Date().toISOString() }).eq('id', input.id);
+      if (error) throw error;
+      return 'Commitment completed';
+    }
+    if (name === 'save_plan') {
+      const { error } = await db.from('plans').upsert({
+        day: today(), items: input.items, updated_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+      return 'Plan saved';
+    }
+    return 'Unknown tool';
+  } catch (e) {
+    return `Error: ${e.message}`;
+  }
+}
+
+function daysSince(ts) {
+  return Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
+}
+
+function buildSystem(s) {
+  const projects = s.projects.map((p) =>
+    `- [${p.id}] ${p.name} | ${p.status} | P${p.priority} | untouched ${daysSince(p.last_touched)}d | next: ${p.next_step || 'none'}${p.notes ? ' | notes: ' + p.notes : ''}`
+  ).join('\n') || '(none)';
+  const commitments = s.commitments.map((c) => {
+    const late = c.due_date && c.due_date < s.day ? ' OVERDUE' : '';
+    return `- [${c.id}] ${c.text} | due ${c.due_date || 'none'}${late}`;
+  }).join('\n') || '(none)';
+  const plan = s.plan.length ? s.plan.map((i) => `- ${i}`).join('\n') : '(not agreed yet)';
+
+  return `You are John's daily execution coach. John is a non-technical founder in Kampala (EAT) running many parallel projects. Today is ${s.day}.
+
+Your job:
+1. Session start (or when asked to start the day): review projects and commitments, then propose a prioritized to-do list for today with one-line reasoning per item. Ask for agreement or edits. Once he agrees, call save_plan with the final list.
+2. For each active project you discuss, break it into concrete next steps and help him execute them as fast as reasonably possible. Keep next_step current via update_project.
+3. Flag projects untouched for 3+ days, and overdue commitments, so nothing is neglected. Do this at session start, briefly.
+4. Track commitments: when he promises to do something, call add_commitment. Follow up on open ones. When done, call complete_commitment.
+5. If he drifts from the agreed plan, redirect him in one short line, but accept genuine new input and re-prioritize if warranted.
+6. When a project or detail is unspecified, pick the most plausible candidate from the data, state which you picked, and proceed.
+
+Style: concise, direct, decisive. Plain-text lists using "-" . No motivational talk, no headers, no markdown bold. Keep replies short enough to read on a phone. Give a recommendation, not a menu of options.
+
+PROJECTS:
+${projects}
+
+OPEN COMMITMENTS:
+${commitments}
+
+TODAY'S AGREED PLAN:
+${plan}`;
+}
+
+async function callClaude(system, messages) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({ model: MODEL, max_tokens: 1500, system, tools: TOOLS, messages }),
+  });
+  if (!r.ok) throw new Error(`Claude API ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function POST(req) {
+  if (!authorized(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  try {
+    const { message } = await req.json();
+    if (!message?.trim()) return NextResponse.json({ error: 'empty' }, { status: 400 });
+
+    await db.from('messages').insert({ role: 'user', content: message });
+
+    const { data: hist } = await db.from('messages').select('role,content')
+      .order('created_at', { ascending: false }).limit(30);
+    let msgs = (hist || []).reverse().map((m) => ({ role: m.role, content: m.content }));
+    while (msgs.length && msgs[0].role !== 'user') msgs.shift();
+
+    let reply = '';
+    for (let i = 0; i < 8; i++) {
+      const state = await loadState();
+      const res = await callClaude(buildSystem(state), msgs);
+      if (res.stop_reason === 'tool_use') {
+        msgs.push({ role: 'assistant', content: res.content });
+        const results = [];
+        for (const b of res.content) {
+          if (b.type === 'tool_use') {
+            results.push({ type: 'tool_result', tool_use_id: b.id, content: await runTool(b.name, b.input) });
+          }
+        }
+        msgs.push({ role: 'user', content: results });
+        continue;
+      }
+      reply = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      break;
+    }
+    if (!reply) reply = 'Done.';
+
+    await db.from('messages').insert({ role: 'assistant', content: reply });
+    return NextResponse.json(await loadState());
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
