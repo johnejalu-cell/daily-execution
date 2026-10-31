@@ -5,6 +5,7 @@ const STALE_DAYS = 3;
 const daysSince = (ts) => Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
 const BLANK = { name: '', priority: 3, status: 'active', next_step: '' };
 const START = "Start my day. Review my projects, steps and commitments, carry forward unfinished items from my last plan, and propose today's priorities.";
+const REPLAN = "Re-plan my day. Check what is done and what has changed since the current plan was made, then propose an updated list for today to replace it.";
 const dayOf = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Africa/Kampala' });
 
 function ProjectForm({ form, setForm, onSave, onCancel, busy }) {
@@ -359,6 +360,11 @@ export default function Page() {
             <div ref={endRef} />
           </div>
           {error && <div className="err">{error}</div>}
+          {hasToday && !busy && (
+            <div className="chips">
+              <button className="ghost small" onClick={() => send(REPLAN)}>Re-plan today</button>
+            </div>
+          )}
           <div className="composer">
             <textarea
               rows={1}
@@ -395,7 +401,18 @@ export default function Page() {
           ) : (
             <>
           <div className="sec">
-            <h2>Today's plan</h2>
+            <div className="sechead">
+              <h2>Today's plan</h2>
+              {state.plan.length > 0 && (
+                <button
+                  className="ghost small"
+                  disabled={busy}
+                  onClick={() => { setTab('chat'); send(REPLAN); }}
+                >
+                  Re-plan
+                </button>
+              )}
+            </div>
             {state.plan.length === 0 && (
               <>
                 <div className="sub">Not agreed yet.</div>
@@ -403,9 +420,9 @@ export default function Page() {
                   className="primary small"
                   style={{ marginTop: 8 }}
                   disabled={busy}
-                  onClick={() => { setTab('chat'); if (!hasToday) send(START); }}
+                  onClick={() => { setTab('chat'); send(hasToday ? REPLAN : START); }}
                 >
-                  {hasToday ? 'Continue in Coach' : "Start today's session"}
+                  {hasToday ? 'Plan today in Coach' : "Start today's session"}
                 </button>
               </>
             )}
