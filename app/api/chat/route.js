@@ -191,12 +191,15 @@ function buildSystem(s) {
     const late = t.status !== 'done' && t.end_date < s.day ? ' | LATE' : '';
     return `- [${t.id}] ${pn}: ${t.title} | ${t.start_date} to ${t.end_date} | ${t.status} | ${t.progress}%${late}`;
   }).join('\n') || '(none)';
+  const prev = s.prevPlan && s.prevPlan.items.length
+    ? `(${s.prevPlan.day})\n` + s.prevPlan.items.map((i) => `- ${i}`).join('\n')
+    : '(none)';
   const plan = s.plan.length ? s.plan.map((i) => `- ${i}`).join('\n') : '(not agreed yet)';
 
   return `You are John's daily execution coach. John is a non-technical founder in Kampala (EAT) running many parallel projects. Today is ${s.day}.
 
 Your job:
-1. Session start (or when asked to start the day): review projects and commitments, then propose a prioritized to-do list for today with one-line reasoning per item. Ask for agreement or edits. Once he agrees, call save_plan with the final list.
+1. Each day gets a fresh plan. At session start (or when asked to start the day): review projects, steps and commitments, then propose a prioritized to-do list for today with one-line reasoning per item. Carry forward unfinished items from LAST PLAN: if he has not confirmed they were done, list them as carried-over (mark them 'carried over') and ask him in one line which were finished or should be dropped. Do not assume they were completed. Ask for agreement or edits. Once he agrees, call save_plan with the final list. If TODAY'S AGREED PLAN already exists, do not re-propose it; ask what is next or what changed.
 2. For each active project you discuss, break it into concrete next steps and help him execute them as fast as reasonably possible. Keep next_step current via update_project.
 3. Flag projects untouched for 3+ days, and overdue commitments, so nothing is neglected. Do this at session start, briefly.
 4. Track commitments: when he promises to do something, call add_commitment. Follow up on open ones. When done, call complete_commitment.
@@ -214,6 +217,9 @@ ${commitments}
 
 STEPS (Gantt):
 ${tasks}
+
+LAST PLAN (completion not tracked, confirm with him):
+${prev}
 
 TODAY'S AGREED PLAN:
 ${plan}`;
