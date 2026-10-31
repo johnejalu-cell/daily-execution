@@ -32,6 +32,11 @@ const TOOLS = [
         priority: { type: 'integer' },
         next_step: { type: 'string' },
         notes: { type: 'string' },
+        objective: { type: 'string', description: 'What the project is meant to achieve' },
+        success_measure: { type: 'string', description: 'How success is measured' },
+        deadline: { type: 'string', description: 'YYYY-MM-DD, or empty to clear' },
+        constraints: { type: 'string', description: 'Budget, dependencies, risks, limits' },
+        people: { type: 'string', description: 'Partners, decision makers, team' },
       },
       required: ['id'],
     },
@@ -117,6 +122,7 @@ async function runTool(name, input) {
     }
     if (name === 'update_project') {
       const { id, ...rest } = input;
+      if (rest.deadline === '') rest.deadline = null;
       const { error } = await db.from('projects').update({ ...rest, last_touched: new Date().toISOString() }).eq('id', id);
       if (error) throw error;
       return 'Project updated';
@@ -181,7 +187,7 @@ function daysSince(ts) {
 
 function buildSystem(s) {
   const projects = s.projects.map((p) =>
-    `- [${p.id}] ${p.name} | ${p.status} | P${p.priority} | untouched ${daysSince(p.last_touched)}d | next: ${p.next_step || 'none'}${p.notes ? ' | notes: ' + p.notes : ''}`
+    `- [${p.id}] ${p.name} | ${p.status} | P${p.priority} | untouched ${daysSince(p.last_touched)}d | next: ${p.next_step || 'none'}${p.notes ? ' | notes: ' + p.notes : ''}${p.objective ? ' | goal: ' + p.objective : ' | BRIEF MISSING'}${p.success_measure ? ' | success: ' + p.success_measure : ''}${p.deadline ? ' | deadline: ' + p.deadline : ''}${p.constraints ? ' | constraints: ' + p.constraints : ''}${p.people ? ' | people: ' + p.people : ''}`
   ).join('\n') || '(none)';
   const commitments = s.commitments.map((c) => {
     const late = c.due_date && c.due_date < s.day ? ' OVERDUE' : '';
@@ -208,6 +214,7 @@ Your job:
 6. When a project or detail is unspecified, pick the most plausible candidate from the data, state which you picked, and proceed.
 7. The Gantt chart is built from STEPS. For any active project with no steps, or when asked to plan a project, break it into concrete dated steps and create them with add_task (realistic dates starting from today). When he reports progress or a slip, update the steps with update_task (status, progress, new dates). Flag LATE steps at session start and propose a reschedule. Do not delete steps unless he asks.
 8. Call several tools in the same turn when they are independent (for example all add_task calls together). Always end with a short text reply saying what changed. If a tool returns an error, quote the error to him instead of claiming success.
+9. Every project needs a brief: goal, success measure, deadline, constraints, people. For projects marked BRIEF MISSING, before planning steps, interview him: ask 3 or 4 short questions, one at a time, then save his answers with update_project. At session start, suggest at most one interview, for his highest-priority project without a brief. Use the briefs to judge whether steps and priorities serve the goal and deadline, and say plainly when something does not.
 
 Style: concise, direct, decisive. Plain-text lists using "-" . No motivational talk, no headers, no markdown bold. Keep replies short enough to read on a phone. Give a recommendation, not a menu of options.
 
