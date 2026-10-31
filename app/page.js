@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 const STALE_DAYS = 3;
 const daysSince = (ts) => Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
 const BLANK = { name: '', priority: 3, status: 'active', next_step: '' };
+const START = "Start my day. Review my projects, steps and commitments, carry forward unfinished items from my last plan, and propose today's priorities.";
+const dayOf = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Africa/Kampala' });
 
 function ProjectForm({ form, setForm, onSave, onCancel, busy }) {
   return (
@@ -291,6 +293,18 @@ export default function Page() {
     setBusy(false);
   }
 
+  function signOut() {
+    localStorage.removeItem('coach_code');
+    setAuthed(false);
+    setState(null);
+    setCode('');
+    setInput('');
+    setError('');
+    setTab('chat');
+    setEditing(null);
+    setTaskForm(null);
+  }
+
   if (!authed) {
     return (
       <div className="center">
@@ -304,13 +318,17 @@ export default function Page() {
     );
   }
 
+  const hasToday = state.messages.some((m) => m.created_at && dayOf(m.created_at) === state.day);
   const stale = state.projects.filter((p) => p.status === 'active' && daysSince(p.last_touched) >= STALE_DAYS);
 
   return (
     <div className="app">
       <div className="top">
         <h1>Daily Execution Coach</h1>
-        <span className="day">{state.day}</span>
+        <div className="hdr">
+          <span className="day">{state.day}</span>
+          <button className="ghost small" onClick={signOut}>Sign out</button>
+        </div>
       </div>
       <div className="tabs">
         <button className={`tab ${tab === 'chat' ? 'on' : ''}`} onClick={() => setTab('chat')}>Coach</button>
@@ -323,17 +341,21 @@ export default function Page() {
         <>
           <div className="scroll">
             {state.messages.length === 0 && (
-              <div className="empty">
-                <p>No sessions yet. Start today's planning.</p>
-                <button className="primary" onClick={() => send("Start my day. Review my projects and commitments and propose today's priorities.")}>
-                  Start today's session
-                </button>
-              </div>
+              <div className="empty"><p>No sessions yet.</p></div>
             )}
             {state.messages.map((m, i) => (
               <div key={i} className={`msg ${m.role}`}>{m.content}</div>
             ))}
             {busy && <div className="msg assistant dots"><span>●</span><span>●</span><span>●</span></div>}
+            {!hasToday && !busy && (
+              <div className="startcard">
+                <b>New day, new plan</b>
+                <div className="sub">
+                  The coach reviews your projects, steps and unfinished items, then proposes today's priorities for your approval.
+                </div>
+                <button className="primary" onClick={() => send(START)}>Start today's session</button>
+              </div>
+            )}
             <div ref={endRef} />
           </div>
           {error && <div className="err">{error}</div>}
@@ -374,7 +396,19 @@ export default function Page() {
             <>
           <div className="sec">
             <h2>Today's plan</h2>
-            {state.plan.length === 0 && <div className="sub">Not agreed yet. Start a session in Coach.</div>}
+            {state.plan.length === 0 && (
+              <>
+                <div className="sub">Not agreed yet.</div>
+                <button
+                  className="primary small"
+                  style={{ marginTop: 8 }}
+                  disabled={busy}
+                  onClick={() => { setTab('chat'); if (!hasToday) send(START); }}
+                >
+                  {hasToday ? 'Continue in Coach' : "Start today's session"}
+                </button>
+              </>
+            )}
             {state.plan.map((item, i) => <div key={i} className="row ok">{item}</div>)}
           </div>
           <div className="sec">
