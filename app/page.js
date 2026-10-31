@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 
 const STALE_DAYS = 3;
 const daysSince = (ts) => Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
-const BLANK = { name: '', priority: 3, status: 'active', next_step: '' };
+const BLANK = { name: '', priority: 3, status: 'active', next_step: '', objective: '', success_measure: '', deadline: '', constraints: '', people: '' };
 const START = "Start my day. Review my projects, steps and commitments, carry forward unfinished items from my last plan, and propose today's priorities.";
 const REPLAN = "Re-plan my day. Check what is done and what has changed since the current plan was made, then propose an updated list for today to replace it.";
 const dayOf = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Africa/Kampala' });
@@ -22,6 +22,33 @@ function ProjectForm({ form, setForm, onSave, onCancel, busy }) {
         placeholder="Next step"
         value={form.next_step}
         onChange={(e) => setForm({ ...form, next_step: e.target.value })}
+      />
+      <textarea
+        className="fld"
+        placeholder="Goal: what is this project meant to achieve?"
+        value={form.objective}
+        onChange={(e) => setForm({ ...form, objective: e.target.value })}
+      />
+      <input
+        className="fld"
+        placeholder="Success measure (how you will know it worked)"
+        value={form.success_measure}
+        onChange={(e) => setForm({ ...form, success_measure: e.target.value })}
+      />
+      <label className="lbl" style={{ display: 'block', marginBottom: 8 }}>Deadline
+        <input type="date" className="fld" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
+      </label>
+      <textarea
+        className="fld"
+        placeholder="Constraints: budget, dependencies, risks"
+        value={form.constraints}
+        onChange={(e) => setForm({ ...form, constraints: e.target.value })}
+      />
+      <input
+        className="fld"
+        placeholder="People: partners, decision makers, team"
+        value={form.people}
+        onChange={(e) => setForm({ ...form, people: e.target.value })}
       />
       <div className="frow">
         <select className="fld" value={form.priority} onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })}>
@@ -217,7 +244,11 @@ export default function Page() {
   }
 
   function startEdit(p) {
-    setForm({ name: p.name, priority: p.priority, status: p.status, next_step: p.next_step || '' });
+    setForm({
+      name: p.name, priority: p.priority, status: p.status, next_step: p.next_step || '',
+      objective: p.objective || '', success_measure: p.success_measure || '', deadline: p.deadline || '',
+      constraints: p.constraints || '', people: p.people || '',
+    });
     setEditing(p.id);
   }
 
@@ -468,6 +499,24 @@ export default function Page() {
                     {isStale && <span className="flag"> Stale</span>}
                   </div>
                   <div>{p.next_step || 'No next step set'}</div>
+                  {p.objective ? (
+                    <div className="sub" style={{ marginTop: 4 }}>
+                      Goal: {p.objective}{p.deadline ? ` (by ${p.deadline})` : ''}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        className="ghost small"
+                        disabled={busy}
+                        onClick={() => {
+                          setTab('chat');
+                          send(`Interview me to build the brief for ${p.name}. Ask a few short questions, one at a time, then save it.`);
+                        }}
+                      >
+                        Build brief with coach
+                      </button>
+                    </div>
+                  )}
                   <div className="frow" style={{ marginTop: 8 }}>
                     <button className="ghost" onClick={() => startEdit(p)}>Edit</button>
                     <button className="ghost danger" disabled={busy} onClick={() => deleteProject(p)}>Delete</button>
