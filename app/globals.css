@@ -133,3 +133,5 @@ button.ghost.small { padding: 4px 10px; font-size: 13px; }
 }
 
 .chips { display: flex; padding: 0 16px 6px; }
+
+textarea.fld { min-height: 64px; resize: vertical; max-height: 220px; }
