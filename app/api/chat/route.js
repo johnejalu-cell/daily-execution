@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { db, authorized, loadState, today } from '../../../lib/supabase';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MODEL = 'claude-sonnet-5-5';
 
@@ -104,6 +104,19 @@ const TOOLS = [
     description: 'Delete a Gantt step.',
     input_schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
+  {
+    name: 'save_document_summary',
+    description: 'Save a detailed summary of an attached document (business plan, deck, contract) to a project so it persists across sessions. Re-saving the same name replaces the old summary.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string' },
+        name: { type: 'string', description: 'The file name' },
+        summary: { type: 'string', description: 'Detailed summary, up to about 1,200 words' },
+      },
+      required: ['project_id', 'name', 'summary'],
+    },
+  },
 ];
 
 const touch = (id) =>
@@ -174,6 +187,15 @@ async function runTool(name, input) {
       if (error) throw error;
       return 'Step deleted';
     }
+    if (name === 'save_document_summary') {
+      await db.from('documents').delete().eq('project_id', input.project_id).eq('name', input.name);
+      const { error } = await db.from('documents').insert({
+        project_id: input.project_id, name: input.name, summary: input.summary,
+      });
+      if (error) throw error;
+      await touch(input.project_id);
+      return 'Document summary saved';
+    }
     return 'Unknown tool';
   } catch (e) {
     console.error('tool error', name, e.message);
@@ -198,6 +220,10 @@ function buildSystem(s) {
     const late = t.status !== 'done' && t.end_date < s.day ? ' | LATE' : '';
     return `- [${t.id}] ${pn}: ${t.title} | ${t.start_date} to ${t.end_date} | ${t.status} | ${t.progress}%${late}`;
   }).join('\n') || '(none)';
+  const docs = (s.documents || []).filter((d) => s.projects.some((p) => p.id === d.project_id)).map((d) => {
+    const pn = s.projects.find((p) => p.id === d.project_id)?.name;
+    return `- [${d.id}] ${pn}: ${d.name} (${String(d.created_at).slice(0, 10)})\n${String(d.summary).slice(0, 6000)}`;
+  }).join('\n\n') || '(none)';
   const prev = s.prevPlan && s.prevPlan.items.length
     ? `(${s.prevPlan.day})\n` + s.prevPlan.items.map((i) => `- ${i}`).join('\n')
     : '(none)';
@@ -213,8 +239,9 @@ Your job:
 5. If he drifts from the agreed plan, redirect him in one short line, but accept genuine new input and re-prioritize if warranted.
 6. When a project or detail is unspecified, pick the most plausible candidate from the data, state which you picked, and proceed.
 7. The Gantt chart is built from STEPS. For any active project with no steps, or when asked to plan a project, break it into concrete dated steps and create them with add_task (realistic dates starting from today). When he reports progress or a slip, update the steps with update_task (status, progress, new dates). Flag LATE steps at session start and propose a reschedule. Do not delete steps unless he asks.
-8. Call several tools in the same turn when they are independent (for example all add_task calls together). Always end with a short text reply saying what changed. If a tool returns an error, quote the error to him instead of claiming success.
+8. Call several tools in the same turn when they are independent (for example all add_task calls together). Always end with a short text reply saying what changed (except for document plans, see rule 10). If a tool returns an error, quote the error to him instead of claiming success.
 9. Every project needs a brief: goal, success measure, deadline, constraints, people. For projects marked BRIEF MISSING, before planning steps, interview him: ask 3 or 4 short questions, one at a time, then save his answers with update_project. At session start, suggest at most one interview, for his highest-priority project without a brief. Use the briefs to judge whether steps and priorities serve the goal and deadline, and say plainly when something does not.
+10. When he attaches a business plan, deck or other document, read it thoroughly and do all of this: (a) call save_document_summary with a detailed summary, up to about 1,200 words: objectives, strategy, offer, market, key numbers, timeline and milestones, budget, roles and partners, risks, assumptions, open questions; (b) fill the project's brief with update_project (goal, success measure, deadline, constraints, people); (c) build the full execution plan as dated steps with add_task, grouped in phases and sequenced by dependency, with owners in the title where known, at most 10 add_task calls per turn, continuing across turns until the plan is complete (typically 15 to 30 steps); (d) call add_commitment for each decision or action he owes in the first 7 days. Then reply with: the goal, 3 to 6 phases with dates, the first 7 days of actions, key risks, and open questions. Say that every step is on the Gantt. Flag gaps or inconsistencies in the document plainly. For this reply, completeness matters more than brevity, but keep it scannable. If no project matches, ask which project it belongs to, or offer to create one.
 
 Style: concise, direct, decisive. Plain-text lists using "-" . No motivational talk, no headers, no markdown bold. Keep replies short enough to read on a phone. Give a recommendation, not a menu of options.
 
@@ -226,6 +253,9 @@ ${commitments}
 
 STEPS (Gantt):
 ${tasks}
+
+DOCUMENT SUMMARIES (from files he attached earlier):
+${docs}
 
 LAST PLAN (completion not tracked, confirm with him):
 ${prev}
@@ -243,7 +273,7 @@ async function callClaude(system, messages, noTools = false) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: MODEL, max_tokens: 2500, system, tools: TOOLS, messages,
+      model: MODEL, max_tokens: 8000, system, tools: TOOLS, messages,
       ...(noTools ? { tool_choice: { type: 'none' } } : {}),
     }),
   });
@@ -254,15 +284,29 @@ async function callClaude(system, messages, noTools = false) {
 export async function POST(req) {
   if (!authorized(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   try {
-    const { message } = await req.json();
+    const { message, attachments = [] } = await req.json();
     if (!message?.trim()) return NextResponse.json({ error: 'empty' }, { status: 400 });
 
-    await db.from('messages').insert({ role: 'user', content: message });
+    const OK = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    const files = (Array.isArray(attachments) ? attachments : [])
+      .filter((a) => a && OK.includes(a.media_type) && typeof a.data === 'string');
+    const stored = files.length ? `${message}\n[Attached: ${files.map((f) => f.name).join(', ')}]` : message;
+
+    await db.from('messages').insert({ role: 'user', content: stored });
 
     const { data: hist } = await db.from('messages').select('role,content')
       .order('created_at', { ascending: false }).limit(30);
     let msgs = (hist || []).reverse().filter((m) => m.content !== 'Done.').map((m) => ({ role: m.role, content: m.content }));
     while (msgs.length && msgs[0].role !== 'user') msgs.shift();
+
+    if (files.length) {
+      const blocks = files.map((f) => ({
+        type: f.media_type === 'application/pdf' ? 'document' : 'image',
+        source: { type: 'base64', media_type: f.media_type, data: f.data },
+      }));
+      blocks.push({ type: 'text', text: `${message}\n\n(Attached files: ${files.map((f) => f.name).join(', ')})` });
+      msgs[msgs.length - 1] = { role: 'user', content: blocks };
+    }
 
     let reply = '';
     for (let i = 0; i < 15; i++) {
