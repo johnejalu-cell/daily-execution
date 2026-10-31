@@ -131,3 +131,5 @@ button.ghost.small { padding: 4px 10px; font-size: 13px; }
   background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent);
   border-radius: 10px; padding: 14px; margin: 8px 0 12px; display: grid; gap: 8px;
 }
+
+.chips { display: flex; padding: 0 16px 6px; }
