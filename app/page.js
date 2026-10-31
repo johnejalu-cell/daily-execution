@@ -6,6 +6,13 @@ const daysSince = (ts) => Math.floor((Date.now() - new Date(ts).getTime()) / 864
 const BLANK = { name: '', priority: 3, status: 'active', next_step: '', objective: '', success_measure: '', deadline: '', constraints: '', people: '' };
 const START = "Start my day. Review my projects, steps and commitments, carry forward unfinished items from my last plan, and propose today's priorities.";
 const REPLAN = "Re-plan my day. Check what is done and what has changed since the current plan was made, then propose an updated list for today to replace it.";
+const MAX_BYTES = 3000000;
+const toB64 = (f) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(',')[1]);
+  r.onerror = () => rej(new Error('Could not read file'));
+  r.readAsDataURL(f);
+});
 const dayOf = (ts) => new Date(ts).toLocaleDateString('en-CA', { timeZone: 'Africa/Kampala' });
 
 function ProjectForm({ form, setForm, onSave, onCancel, busy }) {
@@ -187,6 +194,8 @@ export default function Page() {
   const [form, setForm] = useState(BLANK);
   const [view, setView] = useState('overview'); // overview | gantt
   const [taskForm, setTaskForm] = useState(null);
+  const [files, setFiles] = useState([]);
+  const fileRef = useRef(null);
   const endRef = useRef(null);
 
   async function api(path, passcode, body, method) {
@@ -224,16 +233,22 @@ export default function Page() {
   }, [state?.messages?.length, busy, tab]);
 
   async function send(text) {
-    const msg = (text ?? input).trim();
+    const attached = text === undefined ? files : [];
+    let msg = (text ?? input).trim();
+    if (!msg && attached.length) msg = 'Review the attached file(s) and build a comprehensive execution plan.';
     if (!msg || busy) return;
     setInput('');
+    if (attached.length) setFiles([]);
     setBusy(true);
     setError('');
-    setState((s) => ({ ...s, messages: [...s.messages, { role: 'user', content: msg }] }));
+    const label = attached.length ? `${msg}\n[Attached: ${attached.map((f) => f.name).join(', ')}]` : msg;
+    setState((s) => ({ ...s, messages: [...s.messages, { role: 'user', content: label }] }));
     try {
-      setState(await api('/api/chat', code, { message: msg }));
+      const payload = attached.map(({ name, media_type, data }) => ({ name, media_type, data }));
+      setState(await api('/api/chat', code, { message: msg, attachments: payload }));
     } catch (e) {
       setError(e.message);
+      if (attached.length) setFiles(attached);
     }
     setBusy(false);
   }
@@ -335,6 +350,47 @@ export default function Page() {
     setTab('chat');
     setEditing(null);
     setTaskForm(null);
+    setFiles([]);
+  }
+
+  async function onPick(e) {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    const OK = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    let total = files.reduce((n, f) => n + f.size, 0);
+    const next = [];
+    for (const f of picked) {
+      if (!OK.includes(f.type)) {
+        setError(`${f.name}: only PDF and image files are supported.`);
+        continue;
+      }
+      total += f.size;
+      if (total > MAX_BYTES) {
+        setError('Attachments must total under 3 MB. Compress the PDF or attach fewer pages.');
+        return;
+      }
+      try {
+        next.push({ name: f.name, media_type: f.type, size: f.size, data: await toB64(f) });
+      } catch (err) {
+        setError(err.message);
+      }
+    }
+    if (next.length) {
+      setFiles((cur) => [...cur, ...next]);
+      setError('');
+    }
+  }
+
+  async function deleteDoc(d) {
+    if (!window.confirm(`Delete the saved summary of "${d.name}"?`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      setState(await api('/api/documents', code, { id: d.id }, 'DELETE'));
+    } catch (e) {
+      setError(e.message);
+    }
+    setBusy(false);
   }
 
   if (!authed) {
@@ -391,20 +447,37 @@ export default function Page() {
             <div ref={endRef} />
           </div>
           {error && <div className="err">{error}</div>}
-          {hasToday && !busy && (
+          {(files.length > 0 || (hasToday && !busy)) && (
             <div className="chips">
-              <button className="ghost small" onClick={() => send(REPLAN)}>Re-plan today</button>
+              {files.length === 0 && (
+                <button className="ghost small" onClick={() => send(REPLAN)}>Re-plan today</button>
+              )}
+              {files.map((f, i) => (
+                <span key={i} className="chip">
+                  {f.name}
+                  <button className="x" aria-label="Remove file" onClick={() => setFiles(files.filter((_, j) => j !== i))}>×</button>
+                </span>
+              ))}
             </div>
           )}
           <div className="composer">
+            <input
+              ref={fileRef}
+              type="file"
+              hidden
+              multiple
+              accept="application/pdf,image/png,image/jpeg,image/gif,image/webp"
+              onChange={onPick}
+            />
+            <button className="ghost" disabled={busy} onClick={() => fileRef.current?.click()} aria-label="Attach a file">Attach</button>
             <textarea
               rows={1}
-              placeholder="Report progress, change priorities, or ask for next steps"
+              placeholder="Report progress, or attach a business plan or deck"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && window.innerWidth > 700) { e.preventDefault(); send(); } }}
             />
-            <button className="send" disabled={busy || !input.trim()} onClick={() => send()}>Send</button>
+            <button className="send" disabled={busy || (!input.trim() && files.length === 0)} onClick={() => send()}>Send</button>
           </div>
         </>
       ) : (
@@ -524,6 +597,24 @@ export default function Page() {
                 </div>
               );
             })}
+          </div>
+          <div className="sec">
+            <h2>Documents</h2>
+            {(state.documents || []).length === 0 && (
+              <div className="sub">None yet. Attach a business plan or deck in Coach.</div>
+            )}
+            {(state.documents || []).map((d) => (
+              <div key={d.id} className="row ok">
+                <b>{d.name}</b>
+                <div className="sub">
+                  {state.projects.find((p) => p.id === d.project_id)?.name || 'Project'}, saved {String(d.created_at).slice(0, 10)}
+                </div>
+                <div className="sub">{String(d.summary).slice(0, 160)}</div>
+                <div className="frow" style={{ marginTop: 8 }}>
+                  <button className="ghost danger small" disabled={busy} onClick={() => deleteDoc(d)}>Delete</button>
+                </div>
+              </div>
+            ))}
           </div>
             </>
           )}
