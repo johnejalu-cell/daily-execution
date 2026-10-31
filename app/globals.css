@@ -125,3 +125,9 @@ button.ghost.small { padding: 4px 10px; font-size: 13px; }
 .gbar.late { border-color: var(--late); }
 .gfill { height: 100%; background: var(--accent); }
 .gbar.late .gfill { background: var(--late); }
+
+.hdr { display: flex; align-items: center; gap: 10px; }
+.startcard {
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 10px; padding: 14px; margin: 8px 0 12px; display: grid; gap: 8px;
+}
