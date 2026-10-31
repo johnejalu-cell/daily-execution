@@ -12,6 +12,11 @@ function clean(b) {
   if (typeof b.notes === 'string') out.notes = b.notes;
   if (Number.isInteger(b.priority) && b.priority >= 1 && b.priority <= 5) out.priority = b.priority;
   if (STATUSES.includes(b.status)) out.status = b.status;
+  for (const k of ['objective', 'success_measure', 'constraints', 'people']) {
+    if (typeof b[k] === 'string') out[k] = b[k].trim();
+  }
+  if (b.deadline === '' || b.deadline === null) out.deadline = null;
+  else if (/^\d{4}-\d{2}-\d{2}$/.test(b.deadline || '')) out.deadline = b.deadline;
   return out;
 }
 
