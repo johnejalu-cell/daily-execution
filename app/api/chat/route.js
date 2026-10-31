@@ -170,6 +170,7 @@ async function runTool(name, input) {
     }
     return 'Unknown tool';
   } catch (e) {
+    console.error('tool error', name, e.message);
     return `Error: ${e.message}`;
   }
 }
@@ -206,6 +207,7 @@ Your job:
 5. If he drifts from the agreed plan, redirect him in one short line, but accept genuine new input and re-prioritize if warranted.
 6. When a project or detail is unspecified, pick the most plausible candidate from the data, state which you picked, and proceed.
 7. The Gantt chart is built from STEPS. For any active project with no steps, or when asked to plan a project, break it into concrete dated steps and create them with add_task (realistic dates starting from today). When he reports progress or a slip, update the steps with update_task (status, progress, new dates). Flag LATE steps at session start and propose a reschedule. Do not delete steps unless he asks.
+8. Call several tools in the same turn when they are independent (for example all add_task calls together). Always end with a short text reply saying what changed. If a tool returns an error, quote the error to him instead of claiming success.
 
 Style: concise, direct, decisive. Plain-text lists using "-" . No motivational talk, no headers, no markdown bold. Keep replies short enough to read on a phone. Give a recommendation, not a menu of options.
 
@@ -225,7 +227,7 @@ TODAY'S AGREED PLAN:
 ${plan}`;
 }
 
-async function callClaude(system, messages) {
+async function callClaude(system, messages, noTools = false) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -233,7 +235,10 @@ async function callClaude(system, messages) {
       'x-api-key': process.env.ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: 1500, system, tools: TOOLS, messages }),
+    body: JSON.stringify({
+      model: MODEL, max_tokens: 2500, system, tools: TOOLS, messages,
+      ...(noTools ? { tool_choice: { type: 'none' } } : {}),
+    }),
   });
   if (!r.ok) throw new Error(`Claude API ${r.status}: ${await r.text()}`);
   return r.json();
@@ -249,11 +254,11 @@ export async function POST(req) {
 
     const { data: hist } = await db.from('messages').select('role,content')
       .order('created_at', { ascending: false }).limit(30);
-    let msgs = (hist || []).reverse().map((m) => ({ role: m.role, content: m.content }));
+    let msgs = (hist || []).reverse().filter((m) => m.content !== 'Done.').map((m) => ({ role: m.role, content: m.content }));
     while (msgs.length && msgs[0].role !== 'user') msgs.shift();
 
     let reply = '';
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 15; i++) {
       const state = await loadState();
       const res = await callClaude(buildSystem(state), msgs);
       if (res.stop_reason === 'tool_use') {
@@ -270,7 +275,12 @@ export async function POST(req) {
       reply = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
       break;
     }
-    if (!reply) reply = 'Done.';
+    if (!reply) {
+      // Ran out of tool rounds or got an empty turn: force a plain-text wrap-up
+      const fin = await callClaude(buildSystem(await loadState()), msgs, true);
+      reply = fin.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+    }
+    if (!reply) throw new Error('The coach did not finish. Tap again to retry.');
 
     await db.from('messages').insert({ role: 'assistant', content: reply });
     return NextResponse.json(await loadState());
