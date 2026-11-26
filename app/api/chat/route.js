@@ -119,6 +119,13 @@ const TOOLS = [
   },
 ];
 
+const WEB_SEARCH = {
+  type: 'web_search_20250305',
+  name: 'web_search',
+  max_uses: 5,
+  user_location: { type: 'approximate', city: 'Kampala', country: 'UG', timezone: 'Africa/Kampala' },
+};
+
 const touch = (id) =>
   db.from('projects').update({ last_touched: new Date().toISOString() }).eq('id', id);
 
@@ -242,6 +249,7 @@ Your job:
 8. Call several tools in the same turn when they are independent (for example all add_task calls together). Always end with a short text reply saying what changed (except for document plans, see rule 10). If a tool returns an error, quote the error to him instead of claiming success.
 9. Every project needs a brief: goal, success measure, deadline, constraints, people. For projects marked BRIEF MISSING, before planning steps, interview him: ask 3 or 4 short questions, one at a time, then save his answers with update_project. At session start, suggest at most one interview, for his highest-priority project without a brief. Use the briefs to judge whether steps and priorities serve the goal and deadline, and say plainly when something does not.
 10. When he attaches a business plan, deck or other document, read it thoroughly and do all of this: (a) call save_document_summary with a detailed summary, up to about 1,200 words: objectives, strategy, offer, market, key numbers, timeline and milestones, budget, roles and partners, risks, assumptions, open questions; (b) fill the project's brief with update_project (goal, success measure, deadline, constraints, people); (c) build the full execution plan as dated steps with add_task, grouped in phases and sequenced by dependency, with owners in the title where known, at most 10 add_task calls per turn, continuing across turns until the plan is complete (typically 15 to 30 steps); (d) call add_commitment for each decision or action he owes in the first 7 days. Then reply with: the goal, 3 to 6 phases with dates, the first 7 days of actions, key risks, and open questions. Say that every step is on the Gantt. Flag gaps or inconsistencies in the document plainly. For this reply, completeness matters more than brevity, but keep it scannable. If no project matches, ask which project it belongs to, or offer to create one.
+11. You can search the web. Use it when he asks for research, or when a plan depends on current facts: regulations, taxes, prices, competitors, suppliers, market data, dates, deals. Search for specifics instead of guessing, prefer Uganda and East Africa sources where relevant, and do not search for things already in the briefs or document summaries. Report what you found in a few lines and say when results are thin or conflicting. After researching a project, keep its existing notes and add the key findings, with today's date, using update_project.
 
 Style: concise, direct, decisive. Plain-text lists using "-" . No motivational talk, no headers, no markdown bold. Keep replies short enough to read on a phone. Give a recommendation, not a menu of options.
 
@@ -264,6 +272,22 @@ TODAY'S AGREED PLAN:
 ${plan}`;
 }
 
+// Final answer text: only what follows the last web search result, plus the sources cited
+function finalText(content) {
+  let start = 0;
+  content.forEach((b, i) => { if (b.type === 'web_search_tool_result') start = i + 1; });
+  const blocks = content.slice(start).filter((b) => b.type === 'text');
+  let text = blocks.map((b) => b.text).join('').trim();
+  const seen = new Map();
+  blocks.forEach((b) => (b.citations || []).forEach((c) => {
+    if (c.url && !seen.has(c.url)) seen.set(c.url, c.title || c.url);
+  }));
+  if (text && seen.size) {
+    text += '\n\nSources:\n' + [...seen].slice(0, 6).map(([u, t]) => `- ${t} (${u})`).join('\n');
+  }
+  return text;
+}
+
 async function callClaude(system, messages, noTools = false) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -273,7 +297,7 @@ async function callClaude(system, messages, noTools = false) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: MODEL, max_tokens: 8000, system, tools: TOOLS, messages,
+      model: MODEL, max_tokens: 8000, system, tools: [...TOOLS, WEB_SEARCH], messages,
       ...(noTools ? { tool_choice: { type: 'none' } } : {}),
     }),
   });
@@ -312,6 +336,10 @@ export async function POST(req) {
     for (let i = 0; i < 15; i++) {
       const state = await loadState();
       const res = await callClaude(buildSystem(state), msgs);
+      if (res.stop_reason === 'pause_turn') {
+        msgs.push({ role: 'assistant', content: res.content });
+        continue;
+      }
       if (res.stop_reason === 'tool_use') {
         msgs.push({ role: 'assistant', content: res.content });
         const results = [];
@@ -323,13 +351,13 @@ export async function POST(req) {
         msgs.push({ role: 'user', content: results });
         continue;
       }
-      reply = res.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      reply = finalText(res.content);
       break;
     }
     if (!reply) {
       // Ran out of tool rounds or got an empty turn: force a plain-text wrap-up
       const fin = await callClaude(buildSystem(await loadState()), msgs, true);
-      reply = fin.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      reply = finalText(fin.content);
     }
     if (!reply) throw new Error('The coach did not finish. Tap again to retry.');
 
